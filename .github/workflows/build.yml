@@ -1,0 +1,94 @@
+name: Build patched Ghostty
+
+on:
+  schedule:
+    - cron: '0 3 * * 1' # 每周一 11:00 北京时间检查新 release
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Upstream tag (留空 = 最新稳定版)'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.t.outputs.tag }}
+      build: ${{ steps.t.outputs.build }}
+    steps:
+      - id: t
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG=$(git ls-remote --tags --refs https://github.com/ghostty-org/ghostty 'v*' \
+              | awk -F/ '{print $NF}' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          fi
+          echo "latest upstream tag: $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if gh release view "${TAG}-patched" -R "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "already built, skip"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone upstream at tag
+        run: git clone --depth 1 --branch "${{ needs.check.outputs.tag }}" https://github.com/ghostty-org/ghostty ghostty
+
+      - name: Apply patch
+        run: cd ghostty && git apply --verbose ../patches/*.patch
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Select Xcode 26
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$XCODE" ] || XCODE=/Applications/Xcode.app
+          echo "using $XCODE"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Download Metal Toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      - name: zig build (ReleaseFast xcframework)
+        run: cd ghostty && zig build -Doptimize=ReleaseFast
+
+      - name: xcodebuild Ghostty.app (ReleaseLocal)
+        run: |
+          cd ghostty
+          xcodebuild -project macos/Ghostty.xcodeproj -scheme Ghostty \
+            -configuration ReleaseLocal SYMROOT="$PWD/macos/build" build | tail -20
+
+      - name: Verify patched action exists
+        run: |
+          BIN=ghostty/macos/build/ReleaseLocal/Ghostty.app/Contents/MacOS/ghostty
+          "$BIN" +list-actions | grep -q new_tab_with_command
+          echo "new_tab_with_command present ✅"
+
+      - name: Zip
+        run: ditto -c -k --keepParent ghostty/macos/build/ReleaseLocal/Ghostty.app Ghostty-patched.zip
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ needs.check.outputs.tag }}-patched" Ghostty-patched.zip \
+            -R "${{ github.repository }}" \
+            -t "Ghostty ${{ needs.check.outputs.tag }} + new_tab_with_command" \
+            -n "Upstream ${{ needs.check.outputs.tag }} with the new_tab_with_command keybind action patch applied. Built by CI (ReleaseLocal, unsigned/ad-hoc)."

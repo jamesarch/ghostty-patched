@@ -1,0 +1,249 @@
+From 6d6b9c4fb2ee95e8548e238748055d147848251d Mon Sep 17 00:00:00 2001
+From: joe <qgsz2015@gmail.com>
+Date: Wed, 10 Jun 2026 20:45:24 +0800
+Subject: [PATCH] input: add new_tab_with_command keybind action
+
+Adds a new keybind action that opens a new tab running the given
+command instead of the configured default, e.g.:
+
+    keybind = cmd+ctrl+one=new_tab_with_command:ssh myhost
+
+The surface configuration plumbing (command override, inherited
+config notification) already existed; this exposes it through a
+binding action. macOS implements the full behavior; GTK currently
+falls back to a plain new tab.
+---
+ include/ghostty.h                       |  8 ++++
+ macos/Sources/Ghostty/Ghostty.App.swift | 51 +++++++++++++++++++++++++
+ src/Surface.zig                         |  6 +++
+ src/apprt/action.zig                    | 24 ++++++++++++
+ src/apprt/gtk/class/application.zig     |  4 ++
+ src/input/Binding.zig                   |  9 +++++
+ src/input/command.zig                   |  1 +
+ 7 files changed, 103 insertions(+)
+
+diff --git a/include/ghostty.h b/include/ghostty.h
+index 72bbb57..075840e 100644
+--- a/include/ghostty.h
++++ b/include/ghostty.h
+@@ -821,6 +821,12 @@ typedef struct {
+   uintptr_t len;
+ } ghostty_action_open_url_s;
+ 
++// apprt.action.NewTabCommand.C
++typedef struct {
++  const char* command;
++  uintptr_t len;
++} ghostty_action_new_tab_with_command_s;
++
+ // apprt.action.CloseTabMode
+ typedef enum {
+   GHOSTTY_ACTION_CLOSE_TAB_MODE_THIS,
+@@ -949,6 +955,7 @@ typedef enum {
+   GHOSTTY_ACTION_SEARCH_SELECTED,
+   GHOSTTY_ACTION_READONLY,
+   GHOSTTY_ACTION_COPY_TITLE_TO_CLIPBOARD,
++  GHOSTTY_ACTION_NEW_TAB_WITH_COMMAND,
+ } ghostty_action_tag_e;
+ 
+ typedef union {
+@@ -990,6 +997,7 @@ typedef union {
+   ghostty_action_search_total_s search_total;
+   ghostty_action_search_selected_s search_selected;
+   ghostty_action_readonly_e readonly;
++  ghostty_action_new_tab_with_command_s new_tab_with_command;
+ } ghostty_action_u;
+ 
+ typedef struct {
+diff --git a/macos/Sources/Ghostty/Ghostty.App.swift b/macos/Sources/Ghostty/Ghostty.App.swift
+index 5833570..f7447e8 100644
+--- a/macos/Sources/Ghostty/Ghostty.App.swift
++++ b/macos/Sources/Ghostty/Ghostty.App.swift
+@@ -500,6 +500,9 @@ extension Ghostty {
+             case GHOSTTY_ACTION_NEW_TAB:
+                 newTab(app, target: target)
+ 
++            case GHOSTTY_ACTION_NEW_TAB_WITH_COMMAND:
++                newTabWithCommand(app, target: target, v: action.action.new_tab_with_command)
++
+             case GHOSTTY_ACTION_NEW_SPLIT:
+                 newSplit(app, target: target, direction: action.action.new_split)
+ 
+@@ -851,6 +854,54 @@ extension Ghostty {
+             }
+         }
+ 
++        private static func newTabWithCommand(
++            _ app: ghostty_app_t,
++            target: ghostty_target_s,
++            v: ghostty_action_new_tab_with_command_s
++        ) {
++            let command = String(
++                bytes: UnsafeRawBufferPointer(start: v.command, count: Int(v.len)),
++                encoding: .utf8
++            )
++
++            switch target.tag {
++            case GHOSTTY_TARGET_APP:
++                // A new tab with a command requires a surface context so
++                // we can inherit the proper configuration. Without one we
++                // do nothing.
++                Ghostty.logger.warning("new_tab_with_command does nothing with an app target")
++                return
++
++            case GHOSTTY_TARGET_SURFACE:
++                guard let surface = target.target.surface else { return }
++                guard let surfaceView = self.surfaceView(from: surface) else { return }
++                guard let appState = self.appState(fromView: surfaceView) else { return }
++                guard appState.config.windowDecorations else {
++                    let alert = NSAlert()
++                    alert.messageText = "Tabs are disabled"
++                    alert.informativeText = "Enable window decorations to use tabs"
++                    alert.addButton(withTitle: "OK")
++                    alert.alertStyle = .warning
++                    _ = alert.runModal()
++                    return
++                }
++
++                var config = SurfaceConfiguration(from: ghostty_surface_inherited_config(surface, GHOSTTY_SURFACE_CONTEXT_TAB))
++                config.command = command
++
++                NotificationCenter.default.post(
++                    name: Notification.ghosttyNewTab,
++                    object: surfaceView,
++                    userInfo: [
++                        Notification.NewSurfaceConfigKey: config,
++                    ]
++                )
++
++            default:
++                assertionFailure()
++            }
++        }
++
+         private static func newSplit(
+             _ app: ghostty_app_t,
+             target: ghostty_target_s,
+diff --git a/src/Surface.zig b/src/Surface.zig
+index c56c979..48b1722 100644
+--- a/src/Surface.zig
++++ b/src/Surface.zig
+@@ -5268,6 +5268,12 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool
+             {},
+         ),
+ 
++        .new_tab_with_command => |v| return try self.rt_app.performAction(
++            .{ .surface = self },
++            .new_tab_with_command,
++            .{ .command = v },
++        ),
++
+         .close_tab => |v| return try self.rt_app.performAction(
+             .{ .surface = self },
+             .close_tab,
+diff --git a/src/apprt/action.zig b/src/apprt/action.zig
+index 4728d73..6a01553 100644
+--- a/src/apprt/action.zig
++++ b/src/apprt/action.zig
+@@ -347,6 +347,10 @@ pub const Action = union(Key) {
+     /// otherwise the terminal-set title.
+     copy_title_to_clipboard,
+ 
++    /// Open a new tab running the given command instead of the default.
++    /// Otherwise behaves the same as new_tab.
++    new_tab_with_command: NewTabCommand,
++
+     /// Sync with: ghostty_action_tag_e
+     pub const Key = enum(c_int) {
+         quit,
+@@ -415,6 +419,7 @@ pub const Action = union(Key) {
+         search_selected,
+         readonly,
+         copy_title_to_clipboard,
++        new_tab_with_command,
+ 
+         test "ghostty.h Action.Key" {
+             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
+@@ -930,6 +935,25 @@ pub const OpenUrl = struct {
+     }
+ };
+ 
++/// The command to run in a new tab for new_tab_with_command.
++pub const NewTabCommand = struct {
++    /// The command to execute.
++    command: []const u8,
++
++    // Sync with: ghostty_action_new_tab_with_command_s
++    pub const C = extern struct {
++        command: [*]const u8,
++        len: usize,
++    };
++
++    pub fn cval(self: NewTabCommand) C {
++        return .{
++            .command = self.command.ptr,
++            .len = self.command.len,
++        };
++    }
++};
++
+ /// sync with ghostty_action_close_tab_mode_e in ghostty.h
+ pub const CloseTabMode = enum(c_int) {
+     /// Close the current tab.
+diff --git a/src/apprt/gtk/class/application.zig b/src/apprt/gtk/class/application.zig
+index a627086..db00153 100644
+--- a/src/apprt/gtk/class/application.zig
++++ b/src/apprt/gtk/class/application.zig
+@@ -710,6 +710,10 @@ pub const Application = extern struct {
+ 
+             .new_tab => return Action.newTab(target),
+ 
++            // TODO: GTK does not yet support the custom command and
++            // falls back to opening a regular new tab.
++            .new_tab_with_command => return Action.newTab(target),
++
+             .new_window => try Action.newWindow(
+                 self,
+                 switch (target) {
+diff --git a/src/input/Binding.zig b/src/input/Binding.zig
+index d60f293..c2fd4db 100644
+--- a/src/input/Binding.zig
++++ b/src/input/Binding.zig
+@@ -559,6 +559,14 @@ pub const Action = union(enum) {
+     /// Open a new tab.
+     new_tab,
+ 
++    /// Open a new tab running the given command instead of the
++    /// default configured command.
++    ///
++    /// The command is executed the same way as the `command`
++    /// configuration: it is run via `/bin/sh -c` allowing arguments,
++    /// e.g. `keybind = cmd+ctrl+one=new_tab_with_command:ssh myhost`
++    new_tab_with_command: []const u8,
++
+     /// Go to the previous tab.
+     previous_tab,
+ 
+@@ -1413,6 +1421,7 @@ pub const Action = union(enum) {
+             // come from. For example `new_window` needs to be sourced to
+             // a surface so inheritance can be done correctly.
+             .new_tab,
++            .new_tab_with_command,
+             .previous_tab,
+             .next_tab,
+             .last_tab,
+diff --git a/src/input/command.zig b/src/input/command.zig
+index ac048ee..87509ea 100644
+--- a/src/input/command.zig
++++ b/src/input/command.zig
+@@ -699,6 +699,7 @@ fn actionCommands(action: Action.Key) []const Command {
+         .jump_to_prompt,
+         .write_scrollback_file,
+         .goto_tab,
++        .new_tab_with_command,
+         .resize_split,
+         .activate_key_table,
+         .activate_key_table_once,
+-- 
+2.54.0 (Apple Git-156)
+
