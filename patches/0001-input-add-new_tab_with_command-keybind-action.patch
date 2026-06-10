@@ -1,6 +1,6 @@
-From c2e6498b7eb2f68f80d6e30a3aba93730d1aa096 Mon Sep 17 00:00:00 2001
+From 78738b49d308b494d1c6ce80f80b93c46c90b532 Mon Sep 17 00:00:00 2001
 From: jamesarch <han.shan@live.cn>
-Date: Wed, 10 Jun 2026 21:05:10 +0800
+Date: Wed, 10 Jun 2026 21:36:12 +0800
 Subject: [PATCH] input: add new_tab_with_command keybind action
 
 Adds a new keybind action that opens a new tab running the given
@@ -18,9 +18,9 @@ falls back to a plain new tab.
  src/Surface.zig                         |  6 +++
  src/apprt/action.zig                    | 24 ++++++++++++
  src/apprt/gtk/class/application.zig     |  4 ++
- src/input/Binding.zig                   |  9 +++++
+ src/input/Binding.zig                   | 27 +++++++++++++
  src/input/command.zig                   |  1 +
- 7 files changed, 103 insertions(+)
+ 7 files changed, 121 insertions(+)
 
 diff --git a/include/ghostty.h b/include/ghostty.h
 index 72bbb57..075840e 100644
@@ -206,7 +206,7 @@ index a627086..db00153 100644
                  self,
                  switch (target) {
 diff --git a/src/input/Binding.zig b/src/input/Binding.zig
-index d60f293..c2fd4db 100644
+index d60f293..6eb5e40 100644
 --- a/src/input/Binding.zig
 +++ b/src/input/Binding.zig
 @@ -559,6 +559,14 @@ pub const Action = union(enum) {
@@ -232,6 +232,31 @@ index d60f293..c2fd4db 100644
              .previous_tab,
              .next_tab,
              .last_tab,
+@@ -3072,6 +3081,24 @@ test "parse: text action equals sign" {
+     }
+ }
+ 
++test "parse: new_tab_with_command" {
++    const testing = std.testing;
++    {
++        const binding = try parseSingle("ctrl+a=new_tab_with_command:ssh myhost");
++        try testing.expect(binding.action == .new_tab_with_command);
++        try testing.expectEqualStrings(
++            "ssh myhost",
++            binding.action.new_tab_with_command,
++        );
++    }
++
++    // A command is required: no colon is an error.
++    try testing.expectError(
++        Error.InvalidFormat,
++        parseSingle("ctrl+a=new_tab_with_command"),
++    );
++}
++
+ // For Ghostty 1.2+ we changed our key names to match the W3C and removed
+ // `physical:`. This tests the backwards compatibility with the old format.
+ // Note that our backwards compatibility isn't 100% perfect since triggers
 diff --git a/src/input/command.zig b/src/input/command.zig
 index ac048ee..87509ea 100644
 --- a/src/input/command.zig
