@@ -51,14 +51,21 @@ jobs:
       - name: Apply patch
         run: cd ghostty && git apply --verbose ../patches/*.patch
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
-
-      - name: Select Xcode 26
+      # brew 版 zig@0.15 自带 Xcode 26.4 链接 bug 的 workaround 补丁
+      # (HACKING.md: Zig 0.15.x has a known linking issue with Xcode 26.4)
+      - name: Install zig 0.15 (Homebrew, patched)
         run: |
-          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
-          [ -n "$XCODE" ] || XCODE=/Applications/Xcode.app
+          brew install zig@0.15
+          echo "$(brew --prefix zig@0.15)/bin" >> "$GITHUB_PATH"
+
+      - name: Select Xcode (prefer 26.3, same as upstream CI)
+        run: |
+          if [ -d /Applications/Xcode_26.3.app ]; then
+            XCODE=/Applications/Xcode_26.3.app
+          else
+            XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+            [ -n "$XCODE" ] || XCODE=/Applications/Xcode.app
+          fi
           echo "using $XCODE"
           sudo xcode-select -s "$XCODE"
           xcodebuild -version
