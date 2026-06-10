@@ -1,6 +1,6 @@
-From 6d6b9c4fb2ee95e8548e238748055d147848251d Mon Sep 17 00:00:00 2001
-From: joe <qgsz2015@gmail.com>
-Date: Wed, 10 Jun 2026 20:45:24 +0800
+From c2e6498b7eb2f68f80d6e30a3aba93730d1aa096 Mon Sep 17 00:00:00 2001
+From: jamesarch <han.shan@live.cn>
+Date: Wed, 10 Jun 2026 21:05:10 +0800
 Subject: [PATCH] input: add new_tab_with_command keybind action
 
 Adds a new keybind action that opens a new tab running the given
