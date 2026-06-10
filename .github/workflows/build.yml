@@ -88,6 +88,12 @@ jobs:
           "$BIN" +list-actions | grep -q new_tab_with_command
           echo "new_tab_with_command present ✅"
 
+      - name: Stable ad-hoc re-sign (avoid "damaged" errors on launch)
+        run: |
+          APP=ghostty/macos/build/ReleaseLocal/Ghostty.app
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict "$APP" && echo "codesign verify OK ✅"
+
       - name: Zip
         run: ditto -c -k --keepParent ghostty/macos/build/ReleaseLocal/Ghostty.app Ghostty-patched.zip
 
@@ -98,4 +104,4 @@ jobs:
           gh release create "${{ needs.check.outputs.tag }}-patched" Ghostty-patched.zip \
             -R "${{ github.repository }}" \
             -t "Ghostty ${{ needs.check.outputs.tag }} + new_tab_with_command" \
-            -n "Upstream ${{ needs.check.outputs.tag }} with the new_tab_with_command keybind action patch applied. Built by CI (ReleaseLocal, unsigned/ad-hoc)."
+            -n $'Upstream ${{ needs.check.outputs.tag }} with the new_tab_with_command keybind action patch applied.\n\nBuilt by CI, ad-hoc signed (no Developer ID). On first manual download, clear the quarantine flag:\n\n    xattr -dr com.apple.quarantine /Applications/Ghostty.app\n\n(The `ghostty-sync` helper does this automatically.)'
